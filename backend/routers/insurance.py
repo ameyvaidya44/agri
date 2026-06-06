@@ -432,7 +432,10 @@ async def submit_insurance_claim(
     if verify_role_fn is None:
         raise HTTPException(status_code=500, detail="Auth service not initialized")
 
-    await verify_role_fn(request)
+    token_data = await verify_role_fn(request)
+    uid = token_data.get("uid")
+    if not uid:
+        raise HTTPException(status_code=401, detail="User identity missing from token")
 
     # Validate image count
     if len(images) == 0:
@@ -473,6 +476,7 @@ async def submit_insurance_claim(
     claim_id = str(uuid.uuid4())[:8].upper()
     claim = {
         "claim_id": claim_id,
+        "owner_uid": uid,
         "farmer_name": farmer_name,
         "crop_type": crop_type,
         "season": season,
@@ -503,10 +507,17 @@ async def get_claim(request: Request, claim_id: str):
     if verify_role_fn is None:
         raise HTTPException(status_code=500, detail="Auth service not initialized")
 
-    await verify_role_fn(request)
+    token_data = await verify_role_fn(request)
+    uid = token_data.get("uid")
+    if not uid:
+        raise HTTPException(status_code=401, detail="User identity missing from token")
 
     claim = _claims.get(claim_id.upper())
-    if not claim:
+    # Return 404 for missing claims AND for claims owned by other users.
+    # Using 404 for both cases prevents IDOR enumeration: a caller cannot
+    # distinguish "this claim does not exist" from "this claim belongs to
+    # someone else", so they cannot use the endpoint to probe valid IDs.
+    if not claim or claim.get("owner_uid") != uid:
         raise HTTPException(status_code=404, detail="Claim not found")
 
     return {"success": True, "claim": claim, "applicable_schemes": _INSURANCE_SCHEMES}
@@ -518,10 +529,15 @@ async def export_claim_pdf(request: Request, claim_id: str):
     if verify_role_fn is None:
         raise HTTPException(status_code=500, detail="Auth service not initialized")
 
-    await verify_role_fn(request)
+    token_data = await verify_role_fn(request)
+    uid = token_data.get("uid")
+    if not uid:
+        raise HTTPException(status_code=401, detail="User identity missing from token")
 
     claim = _claims.get(claim_id.upper())
-    if not claim:
+    # 404 for both missing and foreign claims — same anti-enumeration
+    # rationale as get_claim above.
+    if not claim or claim.get("owner_uid") != uid:
         raise HTTPException(status_code=404, detail="Claim not found")
 
     try:
