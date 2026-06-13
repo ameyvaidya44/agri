@@ -358,20 +358,6 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.error("❌ ML router initialization failed: %s", exc, exc_info=True)
 
-    try:
-        logger.info("🔄 Initializing offline sync and CRDT conflict resolution...")
-        from persistence.offline_sync import init_schema
-        from sync_worker import get_sync_worker
-        from sync_conflict_resolver import get_sync_manager
-        
-        init_schema()
-        sync_worker = get_sync_worker(db_firestore)
-        sync_worker.start()
-        sync_manager = get_sync_manager()
-        logger.info("✅ Offline sync, CRDT resolver, and sync worker initialized")
-    except Exception as exc:
-        logger.warning("Offline sync and CRDT initialization skipped: %s", exc)
-
     startup_duration = time.time() - startup_time
     logger.info("✅ All services started successfully in %.2fs", startup_duration)
 
@@ -384,15 +370,6 @@ async def lifespan(app: FastAPI):
         logger.info("✅ Notification broker stopped")
     except Exception as exc:
         logger.error("❌ Error stopping notification broker: %s", exc, exc_info=True)
-
-    try:
-        logger.info("🔄 Stopping sync worker...")
-        from sync_worker import _worker
-        if _worker is not None:
-            _worker.stop()
-        logger.info("✅ Sync worker stopped")
-    except Exception as exc:
-        logger.warning("Error stopping sync worker: %s", exc)
 
     try:
         logger.info("🗄️  Shutting down database connections...")
@@ -1495,6 +1472,20 @@ import csrf_protection as _csrf
 _csrf.configure(_CORS_ORIGINS)
 app.add_middleware(RBACMiddleware)
 app.add_middleware(ErrorRecoveryMiddleware)
+
+# ── Cross-Origin-Opener-Policy ─────────────────────────────────────────────
+# Firebase Auth popup uses window.open() + window.closed + postMessage() to
+# communicate the OAuth result back to the opener.  The default
+# same-origin value blocks this cross-origin communication, causing the
+# popup to hang or produce "Cross-Origin-Opener-Policy policy would block
+# the window.closed call" warnings.  same-origin-allow-popups preserves
+# the opener relationship so Firebase can read the popup result.
+@app.middleware("http")
+async def add_coop_header(request, call_next):
+    response = await call_next(request)
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
+    return response
+
 logger.info(print_rbac_matrix())
 
 # Import the voice assistant router at module level so app.include_router() can
